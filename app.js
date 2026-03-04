@@ -8,9 +8,10 @@ const state = {
   simTime: 0,
   lastTs: 0,
   unwAng: 0,
-  feederVelPrev: 0,
-  bufferPosPrev: 0,
+  feederAng: 0,
   webPhase: 0,
+  bufferPosPrev: 0,
+  bufferVelPrev: 0,
   history: [],
 };
 
@@ -26,13 +27,16 @@ const posChart = document.getElementById('posChart').getContext('2d');
 const fmt = (v, unit = '') => `${Number(v).toFixed(2)}${unit}`;
 
 function updateValueLabels() {
-  for (const [id, el] of Object.entries(inputs)) document.getElementById(`${id}Val`).textContent = el.value;
+  for (const [id, el] of Object.entries(inputs)) {
+    document.getElementById(`${id}Val`).textContent = el.value;
+  }
 }
 
 function getParams() {
   const p = Object.fromEntries(Object.entries(inputs).map(([k, el]) => [k, Number(el.value)]));
-  p.unwOmega = p.unwinderDeg * Math.PI / 180;
+  p.unwOmega = (p.unwinderDeg * Math.PI) / 180;
   p.rUnw = p.dUnw / 2;
+  p.rFeed = p.dFeed / 2;
   p.unwLinear = p.unwOmega * p.rUnw;
   p.cycleT = Math.max(0.15, p.feedLength / Math.max(1e-6, p.unwLinear));
   p.moveT = p.cycleT * 0.7;
@@ -48,41 +52,33 @@ function feederKinematics(t, p) {
   let td = p.decTime;
   let tv = p.moveT - ta - td;
   let vPeak;
-  let triangular = false;
 
   if (tv >= 0) {
     const denom = tv + 0.5 * (ta + td);
-    vPeak = p.feedLength / Math.max(1e-8, denom);
-    vPeak = Math.min(vPeak, p.feederVmax);
-    const realD = vPeak * denom;
-    if (realD < p.feedLength) vPeak = p.feedLength / denom;
+    vPeak = Math.min(p.feederVmax, p.feedLength / Math.max(1e-8, denom));
+    if (vPeak * denom < p.feedLength) vPeak = p.feedLength / denom;
   } else {
-    triangular = true;
     const sum = ta + td;
     ta = p.moveT * (ta / sum);
     td = p.moveT - ta;
-    vPeak = 2 * p.feedLength / Math.max(1e-8, p.moveT);
+    tv = 0;
+    vPeak = (2 * p.feedLength) / Math.max(1e-8, p.moveT);
   }
 
   const aUp = vPeak / Math.max(1e-8, ta);
   const aDn = vPeak / Math.max(1e-8, td);
 
-  if (!triangular) {
-    if (tc < ta) return { pos: 0.5 * aUp * tc * tc, vel: aUp * tc, acc: aUp, moving: true };
-    if (tc < ta + tv) {
-      const t2 = tc - ta;
-      return { pos: 0.5 * aUp * ta * ta + vPeak * t2, vel: vPeak, acc: 0, moving: true };
-    }
-    const t3 = tc - ta - tv;
-    const p1 = 0.5 * aUp * ta * ta + vPeak * tv;
-    return { pos: p1 + vPeak * t3 - 0.5 * aDn * t3 * t3, vel: Math.max(0, vPeak - aDn * t3), acc: -aDn, moving: true };
+  if (tc < ta) return { pos: 0.5 * aUp * tc * tc, vel: aUp * tc, acc: aUp, moving: true };
+  if (tc < ta + tv) {
+    const t2 = tc - ta;
+    return { pos: 0.5 * aUp * ta * ta + vPeak * t2, vel: vPeak, acc: 0, moving: true };
   }
 
-  if (tc < ta) return { pos: 0.5 * aUp * tc * tc, vel: aUp * tc, acc: aUp, moving: true };
-  const t2 = tc - ta;
+  const t3 = tc - ta - tv;
+  const p1 = 0.5 * aUp * ta * ta + vPeak * tv;
   return {
-    pos: 0.5 * aUp * ta * ta + vPeak * t2 - 0.5 * aDn * t2 * t2,
-    vel: Math.max(0, vPeak - aDn * t2),
+    pos: p1 + vPeak * t3 - 0.5 * aDn * t3 * t3,
+    vel: Math.max(0, vPeak - aDn * t3),
     acc: -aDn,
     moving: true,
   };
@@ -93,29 +89,23 @@ function pushHistory(sample) {
   while (state.history.length && state.history[0].t < state.simTime - 10) state.history.shift();
 }
 
-function polyline(points) {
-  mctx.beginPath();
-  mctx.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i++) mctx.lineTo(points[i].x, points[i].y);
-}
-
 function drawRoller(x, y, r, label, angle = 0) {
   const ctx = mctx;
-  const grad = ctx.createRadialGradient(x - r * 0.3, y - r * 0.35, r * 0.15, x, y, r);
+  const grad = ctx.createRadialGradient(x - r * 0.3, y - r * 0.35, r * 0.12, x, y, r);
   grad.addColorStop(0, '#9ce8ff');
-  grad.addColorStop(0.55, '#2ca4e8');
-  grad.addColorStop(1, '#0e3b84');
+  grad.addColorStop(0.58, '#2da5ea');
+  grad.addColorStop(1, '#0d346f');
 
-  ctx.shadowBlur = 25;
-  ctx.shadowColor = 'rgba(50,200,255,0.9)';
+  ctx.shadowBlur = 24;
+  ctx.shadowColor = 'rgba(75,207,255,0.9)';
   ctx.fillStyle = grad;
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.shadowBlur = 0;
-  ctx.strokeStyle = '#8ef3ff';
   ctx.lineWidth = 2;
+  ctx.strokeStyle = '#8ef3ff';
   ctx.beginPath();
   ctx.arc(x, y, r * 0.88, 0, Math.PI * 2);
   ctx.stroke();
@@ -123,7 +113,7 @@ function drawRoller(x, y, r, label, angle = 0) {
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(angle);
-  ctx.strokeStyle = 'rgba(170,245,255,0.85)';
+  ctx.strokeStyle = 'rgba(188,248,255,0.9)';
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(0, 0);
@@ -141,124 +131,195 @@ function drawRoller(x, y, r, label, angle = 0) {
   });
 }
 
-function drawMachine(p, kin, bufferY, cutterLift, rollerAngle) {
+function buildWebPath(ctx, S) {
+  ctx.beginPath();
+  ctx.moveTo(S.unw.x - S.unw.r * 0.95, S.unw.y);
+  ctx.arc(S.unw.x, S.unw.y, S.unw.r * 0.95, Math.PI, Math.PI * 1.78, false);
+  ctx.quadraticCurveTo(S.r1.x - S.r1.r * 1.8, S.r1.y - S.r1.r * 1.7, S.r1.x - S.r1.r * 0.95, S.r1.y - S.r1.r * 0.2);
+  ctx.arc(S.r1.x, S.r1.y, S.r1.r * 0.95, Math.PI * 1.05, Math.PI * 1.95, true);
+
+  ctx.quadraticCurveTo(S.r2.x - S.r2.r * 1.1, S.r2.y - S.r2.r * 1.7, S.r2.x + S.r2.r * 0.9, S.r2.y - S.r2.r * 0.45);
+  ctx.arc(S.r2.x, S.r2.y, S.r2.r * 0.95, Math.PI * 1.8, Math.PI * 0.35, false);
+
+  ctx.quadraticCurveTo(S.r2.x + S.r2.r * 1.2, S.buf.y - S.buf.r * 1.35, S.buf.x + S.buf.r * 0.84, S.buf.y - S.buf.r * 0.52);
+  ctx.arc(S.buf.x, S.buf.y, S.buf.r * 0.95, -0.55, Math.PI + 0.55, true);
+
+  ctx.quadraticCurveTo(S.r3.x - S.r3.r * 1.25, S.buf.y - S.r3.r * 1.1, S.r3.x - S.r3.r * 0.92, S.r3.y + S.r3.r * 0.4);
+  ctx.arc(S.r3.x, S.r3.y, S.r3.r * 0.95, Math.PI * 0.7, Math.PI * 1.95, false);
+
+  ctx.quadraticCurveTo(S.feed.x - S.feed.r * 1.3, S.feed.y - S.feed.r * 1.55, S.feed.x + S.feed.r * 0.9, S.feed.y - S.feed.r * 0.45);
+  ctx.arc(S.feed.x, S.feed.y, S.feed.r * 0.95, Math.PI * 1.82, Math.PI * 0.2, false);
+}
+
+function drawMachine(p, kin, bufferY, cutterLift) {
   const ctx = mctx;
   const w = machineCanvas.width;
   const h = machineCanvas.height;
   ctx.clearRect(0, 0, w, h);
 
   const S = {
-    r1: { x: 100, y: 85, r: p.dR1 * 0.35 },
-    r2: { x: 420, y: 85, r: p.dR2 * 0.35 },
-    r3: { x: 700, y: 85, r: p.dR3 * 0.35 },
-    unw: { x: 100, y: 290, r: p.dUnw * 0.35 },
-    feed: { x: 900, y: 85, r: p.dFeed * 0.35 },
-    buf: { x: 560, y: 290 + bufferY, r: p.dBuf * 0.35 },
+    r1: { x: 130, y: 90, r: p.dR1 * 0.35 },
+    r2: { x: 450, y: 90, r: p.dR2 * 0.35 },
+    r3: { x: 780, y: 90, r: p.dR3 * 0.35 },
+    unw: { x: 130, y: 300, r: p.dUnw * 0.35 },
+    feed: { x: 1030, y: 90, r: p.dFeed * 0.35 },
+    buf: { x: 620, y: 300 + bufferY, r: p.dBuf * 0.35 },
   };
 
-  const webPath = [
-    { x: S.unw.x - S.unw.r, y: S.unw.y - S.unw.r },
-    { x: S.r1.x - S.r1.r, y: S.r1.y - S.r1.r },
-    { x: S.r2.x + S.r2.r, y: S.r2.y - S.r2.r },
-    { x: S.r2.x + S.r2.r, y: S.buf.y },
-    { x: S.r3.x - S.r3.r, y: S.buf.y },
-    { x: S.r3.x - S.r3.r, y: S.r3.y - S.r3.r },
-    { x: S.feed.x + S.feed.r, y: S.feed.y - S.feed.r },
-  ];
-
-  polyline(webPath);
-  ctx.lineWidth = 11;
-  ctx.strokeStyle = 'rgba(255,35,125,0.12)';
+  buildWebPath(ctx, S);
+  ctx.lineWidth = 12;
+  ctx.strokeStyle = 'rgba(255,45,130,0.12)';
   ctx.shadowColor = 'rgba(255,70,160,0.95)';
-  ctx.shadowBlur = 24;
+  ctx.shadowBlur = 25;
   ctx.stroke();
 
-  polyline(webPath);
+  buildWebPath(ctx, S);
   ctx.lineWidth = 4.5;
   ctx.strokeStyle = '#ff4d7f';
   ctx.shadowBlur = 16;
   ctx.stroke();
 
-  if (state.running) {
-    polyline(webPath);
-    ctx.setLineDash([12, 20]);
+  if (state.running && kin.moving) {
+    buildWebPath(ctx, S);
+    ctx.lineWidth = 2.4;
+    ctx.strokeStyle = '#ffd6e4';
+    ctx.setLineDash([11, 20]);
     ctx.lineDashOffset = -state.webPhase;
-    ctx.lineWidth = 2.5;
-    ctx.strokeStyle = '#ffd8e4';
-    ctx.shadowBlur = 12;
+    ctx.shadowBlur = 10;
     ctx.stroke();
     ctx.setLineDash([]);
   }
   ctx.shadowBlur = 0;
 
-  drawRoller(S.r1.x, S.r1.y, S.r1.r, 'Roller1', rollerAngle * 0.9);
-  drawRoller(S.r2.x, S.r2.y, S.r2.r, 'Roller2', rollerAngle * 0.88);
-  drawRoller(S.r3.x, S.r3.y, S.r3.r, 'Roller3', rollerAngle * 0.92);
+  drawRoller(S.r1.x, S.r1.y, S.r1.r, 'Roller1', state.unwAng * 0.5);
+  drawRoller(S.r2.x, S.r2.y, S.r2.r, 'Roller2', state.unwAng * 0.42);
+  drawRoller(S.r3.x, S.r3.y, S.r3.r, 'Roller3', state.feederAng * 0.8);
   drawRoller(S.unw.x, S.unw.y, S.unw.r, 'Unwin\nder', state.unwAng);
-  drawRoller(S.feed.x, S.feed.y, S.feed.r, 'Feeder', rollerAngle * 1.1);
-  drawRoller(S.buf.x, S.buf.y, S.buf.r, 'Active\nBuffer', -rollerAngle * 0.75);
+  drawRoller(S.feed.x, S.feed.y, S.feed.r, 'Feeder', state.feederAng);
+  drawRoller(S.buf.x, S.buf.y, S.buf.r, 'Active\nBuffer', -state.unwAng * 0.3);
 
-  const cutterX = S.feed.x + S.feed.r + 36;
-  const topY = 24;
-  const down = 66 * cutterLift;
-  ctx.shadowBlur = 18;
-  ctx.shadowColor = 'rgba(116, 255, 234, 0.75)';
-  ctx.fillStyle = '#86fff0';
-  ctx.fillRect(cutterX - 10, topY - 12, 34, 10);
-  ctx.fillStyle = '#b6fff7';
-  ctx.fillRect(cutterX, topY + down, 14, 50);
+  const cutterX = S.feed.x + S.feed.r + 46;
+  const topY = 30;
+  const down = 78 * cutterLift;
+
+  ctx.strokeStyle = 'rgba(130,250,255,0.7)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(cutterX + 8, 6);
+  ctx.lineTo(cutterX + 8, topY + down);
+  ctx.stroke();
+
+  ctx.shadowBlur = 20;
+  ctx.shadowColor = 'rgba(122,255,245,0.85)';
+  ctx.fillStyle = '#8efff5';
+  ctx.fillRect(cutterX - 10, topY - 16, 38, 12);
+  ctx.fillStyle = '#cafffa';
+  ctx.fillRect(cutterX, topY + down, 16, 58);
   ctx.shadowBlur = 0;
 
   ctx.fillStyle = '#bcefff';
   ctx.font = '14px sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText(`Cycle ${fmt(p.cycleT, 's')} / Move ${fmt(p.moveT, 's')} / Stop ${fmt(p.stopT, 's')}`, 12, h - 40);
-  ctx.fillText(`Feeder: ${kin.moving ? '이송중' : '정지'} | Active Buffer: ${fmt(bufferY / 0.35, ' mm')}`, 12, h - 18);
+  ctx.fillText(`Cycle ${fmt(p.cycleT, ' s')} | Move ${fmt(p.moveT, ' s')} | Stop ${fmt(p.stopT, ' s')}`, 14, h - 40);
+  ctx.fillText(`Feeder: ${kin.moving ? '이송중' : '정지'} | Buffer 보정: ${fmt(bufferY / 0.35, ' mm')} | Cutter: ${cutterLift > 0.5 ? 'DOWN' : 'UP'}`, 14, h - 18);
 }
 
-function drawChart(ctx, keys, colors, title, yLabel) {
-  const W = ctx.canvas.width, H = ctx.canvas.height;
+function drawAxes(ctx, x0, y0, w, h, tMin, tMax, yMin, yMax, unit) {
+  ctx.strokeStyle = 'rgba(125,191,238,0.45)';
+  ctx.strokeRect(x0, y0, w, h);
+
+  ctx.fillStyle = '#a9dfff';
+  ctx.font = '11px sans-serif';
+
+  const yTicks = 5;
+  for (let i = 0; i <= yTicks; i++) {
+    const ratio = i / yTicks;
+    const y = y0 + h * ratio;
+    const value = yMax - (yMax - yMin) * ratio;
+    ctx.strokeStyle = 'rgba(92,153,214,0.2)';
+    ctx.beginPath();
+    ctx.moveTo(x0, y);
+    ctx.lineTo(x0 + w, y);
+    ctx.stroke();
+    ctx.fillText(value.toFixed(1), x0 - 38, y + 4);
+  }
+
+  const xTicks = 5;
+  for (let i = 0; i <= xTicks; i++) {
+    const ratio = i / xTicks;
+    const x = x0 + w * ratio;
+    const value = tMin + (tMax - tMin) * ratio;
+    ctx.strokeStyle = 'rgba(92,153,214,0.2)';
+    ctx.beginPath();
+    ctx.moveTo(x, y0);
+    ctx.lineTo(x, y0 + h);
+    ctx.stroke();
+    ctx.fillText(`${value.toFixed(1)} s`, x - 12, y0 + h + 14);
+  }
+
+  ctx.fillText(unit, 6, y0 + 12);
+}
+
+function drawChart(ctx, keys, colors, title, unit) {
+  const W = ctx.canvas.width;
+  const H = ctx.canvas.height;
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#020711';
   ctx.fillRect(0, 0, W, H);
 
-  const pad = { l: 44, r: 12, t: 20, b: 28 };
-  const x0 = pad.l, y0 = pad.t, w = W - pad.l - pad.r, h = H - pad.t - pad.b;
-  ctx.strokeStyle = 'rgba(119,177,232,0.4)';
-  ctx.strokeRect(x0, y0, w, h);
-  if (state.history.length < 2) return;
+  const pad = { l: 50, r: 12, t: 22, b: 30 };
+  const x0 = pad.l;
+  const y0 = pad.t;
+  const w = W - pad.l - pad.r;
+  const h = H - pad.t - pad.b;
+
+  if (state.history.length < 2) {
+    ctx.fillStyle = '#a9dfff';
+    ctx.fillText(`${title} (${unit})`, 12, 16);
+    return;
+  }
 
   const tMin = state.history[0].t;
   const tMax = state.history[state.history.length - 1].t;
-  let yMin = Infinity, yMax = -Infinity;
-  for (const s of state.history) {
-    for (const k of keys) {
-      yMin = Math.min(yMin, s[k]);
-      yMax = Math.max(yMax, s[k]);
+  let yMin = Infinity;
+  let yMax = -Infinity;
+
+  for (const sample of state.history) {
+    for (const key of keys) {
+      yMin = Math.min(yMin, sample[key]);
+      yMax = Math.max(yMax, sample[key]);
     }
   }
-  if (Math.abs(yMax - yMin) < 1e-9) { yMin -= 1; yMax += 1; }
-  const padY = (yMax - yMin) * 0.1;
-  yMin -= padY;
-  yMax += padY;
+
+  if (Math.abs(yMax - yMin) < 1e-9) {
+    yMin -= 1;
+    yMax += 1;
+  }
+
+  const p = (yMax - yMin) * 0.1;
+  yMin -= p;
+  yMax += p;
 
   const sx = (t) => x0 + ((t - tMin) / Math.max(1e-6, tMax - tMin)) * w;
   const sy = (v) => y0 + h - ((v - yMin) / (yMax - yMin)) * h;
 
-  ctx.strokeStyle = 'rgba(172,219,255,0.36)';
+  drawAxes(ctx, x0, y0, w, h, tMin, tMax, yMin, yMax, unit);
+
+  ctx.strokeStyle = 'rgba(173,226,255,0.35)';
   ctx.beginPath();
   ctx.moveTo(x0, sy(0));
   ctx.lineTo(x0 + w, sy(0));
   ctx.stroke();
 
-  keys.forEach((k, i) => {
+  keys.forEach((key, i) => {
     ctx.shadowBlur = 12;
     ctx.shadowColor = colors[i];
     ctx.strokeStyle = colors[i];
     ctx.lineWidth = 2;
     ctx.beginPath();
-    state.history.forEach((s, idx) => {
-      const X = sx(s.t), Y = sy(s[k]);
+    state.history.forEach((sample, idx) => {
+      const X = sx(sample.t);
+      const Y = sy(sample[key]);
       if (idx === 0) ctx.moveTo(X, Y);
       else ctx.lineTo(X, Y);
     });
@@ -266,14 +327,15 @@ function drawChart(ctx, keys, colors, title, yLabel) {
     ctx.shadowBlur = 0;
   });
 
-  ctx.fillStyle = '#ccefff';
+  ctx.fillStyle = '#d5f3ff';
   ctx.font = '12px sans-serif';
-  ctx.fillText(`${title} (${yLabel})`, x0, 14);
-  keys.forEach((k, i) => {
+  ctx.fillText(`${title} (${unit})`, x0, 14);
+
+  keys.forEach((key, i) => {
     ctx.fillStyle = colors[i];
-    ctx.fillRect(W - 174, 8 + i * 14, 10, 10);
+    ctx.fillRect(W - 188, 8 + i * 14, 10, 10);
     ctx.fillStyle = '#dbf5ff';
-    ctx.fillText(k, W - 160, 17 + i * 14);
+    ctx.fillText(key, W - 174, 17 + i * 14);
   });
 }
 
@@ -292,9 +354,10 @@ function resetState() {
   state.simTime = 0;
   state.lastTs = 0;
   state.unwAng = 0;
+  state.feederAng = 0;
   state.webPhase = 0;
-  state.feederVelPrev = 0;
   state.bufferPosPrev = 0;
+  state.bufferVelPrev = 0;
   state.history = [];
 }
 
@@ -304,16 +367,19 @@ function tick(ts) {
   state.lastTs = ts;
 
   const p = getParams();
+  const kin = feederKinematics(state.simTime, p);
+
   if (state.running) {
     state.simTime += dt;
     state.unwAng += p.unwOmega * dt;
-    state.webPhase += p.unwLinear * dt * 0.16;
+    state.feederAng += (kin.vel / Math.max(1e-6, p.rFeed)) * dt;
+    if (kin.moving) state.webPhase += kin.vel * dt * 0.17;
   }
 
-  const kin = feederKinematics(state.simTime, p);
+  const kinNow = feederKinematics(state.simTime, p);
   const unwPos = p.unwLinear * state.simTime;
   const cycleIdx = Math.floor(state.simTime / p.cycleT);
-  const feederTotalPos = cycleIdx * p.feedLength + kin.pos;
+  const feederTotalPos = cycleIdx * p.feedLength + kinNow.pos;
   const bufferMM = (unwPos - feederTotalPos) / 2;
   const bufferPX = bufferMM * 0.35;
 
@@ -322,13 +388,14 @@ function tick(ts) {
   const cutterLift = stopPhase >= 0 ? Math.sin(Math.PI * Math.min(1, stopPhase)) ** 2 : 0;
 
   const vUnw = state.running ? p.unwLinear : 0;
-  const vFeed = state.running ? kin.vel : 0;
-  const aFeed = state.running ? kin.acc : 0;
+  const vFeed = state.running ? kinNow.vel : 0;
+  const aFeed = state.running ? kinNow.acc : 0;
+
   const bufferVel = state.running ? (bufferMM - state.bufferPosPrev) / Math.max(1e-6, dt) : 0;
-  const bufferAcc = state.running ? (bufferVel - state.feederVelPrev) / Math.max(1e-6, dt) : 0;
+  const bufferAcc = state.running ? (bufferVel - state.bufferVelPrev) / Math.max(1e-6, dt) : 0;
 
   state.bufferPosPrev = bufferMM;
-  state.feederVelPrev = bufferVel;
+  state.bufferVelPrev = bufferVel;
 
   pushHistory({
     t: state.simTime,
@@ -338,20 +405,21 @@ function tick(ts) {
     'Unw Acc': 0,
     'Feeder Acc': aFeed,
     'Buffer Acc': bufferAcc,
-    'Feeder Pos': feederTotalPos,
     'Buffer Pos': bufferMM,
   });
 
-  drawMachine(p, kin, bufferPX, cutterLift, state.webPhase * 0.06);
+  drawMachine(p, kinNow, bufferPX, cutterLift);
   drawChart(velChart, ['Unw Vel', 'Feeder Vel', 'Buffer Vel'], ['#67f8ac', '#ff7ab3', '#5bc6ff'], 'Velocity', 'mm/s');
   drawChart(accChart, ['Unw Acc', 'Feeder Acc', 'Buffer Acc'], ['#67f8ac', '#ff7ab3', '#5bc6ff'], 'Acceleration', 'mm/s²');
-  drawChart(posChart, ['Feeder Pos', 'Buffer Pos'], ['#ff7ab3', '#5bc6ff'], 'Position', 'mm');
-  updateDerivedText(p, kin, bufferMM, cutterLift);
+  drawChart(posChart, ['Buffer Pos'], ['#5bc6ff'], 'Position', 'mm');
+  updateDerivedText(p, kinNow, bufferMM, cutterLift);
 
   requestAnimationFrame(tick);
 }
 
-for (const el of Object.values(inputs)) el.addEventListener('input', updateValueLabels);
+for (const el of Object.values(inputs)) {
+  el.addEventListener('input', updateValueLabels);
+}
 
 document.getElementById('startBtn').addEventListener('click', () => {
   state.running = !state.running;
