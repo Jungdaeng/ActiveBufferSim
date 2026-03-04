@@ -131,25 +131,61 @@ function drawRoller(x, y, r, label, angle = 0) {
   });
 }
 
-function buildWebPath(ctx, S) {
-  ctx.beginPath();
-  ctx.moveTo(S.unw.x - S.unw.r * 0.95, S.unw.y);
-  ctx.arc(S.unw.x, S.unw.y, S.unw.r * 0.95, Math.PI, Math.PI * 1.78, false);
-  ctx.quadraticCurveTo(S.r1.x - S.r1.r * 1.8, S.r1.y - S.r1.r * 1.7, S.r1.x - S.r1.r * 0.95, S.r1.y - S.r1.r * 0.2);
-  ctx.arc(S.r1.x, S.r1.y, S.r1.r * 0.95, Math.PI * 1.05, Math.PI * 1.95, true);
-
-  ctx.quadraticCurveTo(S.r2.x - S.r2.r * 1.1, S.r2.y - S.r2.r * 1.7, S.r2.x + S.r2.r * 0.9, S.r2.y - S.r2.r * 0.45);
-  ctx.arc(S.r2.x, S.r2.y, S.r2.r * 0.95, Math.PI * 1.8, Math.PI * 0.35, false);
-
-  ctx.quadraticCurveTo(S.r2.x + S.r2.r * 1.2, S.buf.y - S.buf.r * 1.35, S.buf.x + S.buf.r * 0.84, S.buf.y - S.buf.r * 0.52);
-  ctx.arc(S.buf.x, S.buf.y, S.buf.r * 0.95, -0.55, Math.PI + 0.55, true);
-
-  ctx.quadraticCurveTo(S.r3.x - S.r3.r * 1.25, S.buf.y - S.r3.r * 1.1, S.r3.x - S.r3.r * 0.92, S.r3.y + S.r3.r * 0.4);
-  ctx.arc(S.r3.x, S.r3.y, S.r3.r * 0.95, Math.PI * 0.7, Math.PI * 1.95, false);
-
-  ctx.quadraticCurveTo(S.feed.x - S.feed.r * 1.3, S.feed.y - S.feed.r * 1.55, S.feed.x + S.feed.r * 0.9, S.feed.y - S.feed.r * 0.45);
-  ctx.arc(S.feed.x, S.feed.y, S.feed.r * 0.95, Math.PI * 1.82, Math.PI * 0.2, false);
+function pointOnCircle(c, a, scale = 0.95) {
+  return { x: c.x + c.r * scale * Math.cos(a), y: c.y + c.r * scale * Math.sin(a) };
 }
+
+function buildWebPath(ctx, S) {
+  // Orthogonal, externally-tangent web route (matching requested schematic style).
+  const unwL = pointOnCircle(S.unw, Math.PI);
+  const unwT = pointOnCircle(S.unw, -Math.PI / 2);
+
+  const r1L = pointOnCircle(S.r1, Math.PI);
+  const r1T = pointOnCircle(S.r1, -Math.PI / 2);
+
+  const r2T = pointOnCircle(S.r2, -Math.PI / 2);
+  const r2R = pointOnCircle(S.r2, 0);
+
+  const bufL = pointOnCircle(S.buf, Math.PI);
+  const bufR = pointOnCircle(S.buf, 0);
+
+  const r3L = pointOnCircle(S.r3, Math.PI);
+  const r3T = pointOnCircle(S.r3, -Math.PI / 2);
+
+  const feedT = pointOnCircle(S.feed, -Math.PI / 2);
+  const feedR = pointOnCircle(S.feed, 0);
+
+  ctx.beginPath();
+
+  // Unwinder left side up + wrap to top.
+  ctx.moveTo(unwL.x, unwL.y + S.unw.r * 0.95);
+  ctx.lineTo(unwL.x, unwL.y);
+  ctx.arc(S.unw.x, S.unw.y, S.unw.r * 0.95, Math.PI, -Math.PI / 2, true);
+
+  // Link to Roller1 left and wrap to top.
+  ctx.lineTo(r1L.x, r1L.y);
+  ctx.arc(S.r1.x, S.r1.y, S.r1.r * 0.95, Math.PI, -Math.PI / 2, true);
+
+  // Top straight to Roller2 top, then down right side to buffer left side.
+  ctx.lineTo(r2T.x, r2T.y);
+  ctx.arc(S.r2.x, S.r2.y, S.r2.r * 0.95, -Math.PI / 2, 0, false);
+  ctx.lineTo(r2R.x, bufL.y);
+
+  // Active buffer wrap (left to right across lower side).
+  ctx.lineTo(bufL.x, bufL.y);
+  ctx.arc(S.buf.x, S.buf.y, S.buf.r * 0.95, Math.PI, 0, true);
+
+  // Up to Roller3 left, wrap to top.
+  ctx.lineTo(bufR.x, r3L.y);
+  ctx.lineTo(r3L.x, r3L.y);
+  ctx.arc(S.r3.x, S.r3.y, S.r3.r * 0.95, Math.PI, -Math.PI / 2, true);
+
+  // Top straight to feeder top, then to right side and small tail.
+  ctx.lineTo(feedT.x, feedT.y);
+  ctx.arc(S.feed.x, S.feed.y, S.feed.r * 0.95, -Math.PI / 2, 0, false);
+  ctx.lineTo(feedR.x + S.feed.r * 0.72, feedR.y);
+}
+
 
 function drawMachine(p, kin, bufferY, cutterLift) {
   const ctx = mctx;
@@ -179,7 +215,7 @@ function drawMachine(p, kin, bufferY, cutterLift) {
   ctx.shadowBlur = 16;
   ctx.stroke();
 
-  if (state.running && kin.moving) {
+  if (state.running) {
     buildWebPath(ctx, S);
     ctx.lineWidth = 2.4;
     ctx.strokeStyle = '#ffd6e4';
@@ -373,7 +409,7 @@ function tick(ts) {
     state.simTime += dt;
     state.unwAng += p.unwOmega * dt;
     state.feederAng += (kin.vel / Math.max(1e-6, p.rFeed)) * dt;
-    if (kin.moving) state.webPhase += kin.vel * dt * 0.17;
+    state.webPhase += p.unwLinear * dt * 0.12;
   }
 
   const kinNow = feederKinematics(state.simTime, p);
