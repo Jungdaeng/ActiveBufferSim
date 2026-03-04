@@ -1,7 +1,9 @@
-const ids = [
+const rangeIds = [
   'unwinderDeg', 'feedLength', 'accTime', 'decTime', 'feederVmax',
   'dR1', 'dR2', 'dR3', 'dUnw', 'dFeed', 'dBuf'
 ];
+
+const directionIds = ['entryR1', 'entryR2', 'entryBuf', 'entryR3', 'entryFeed'];
 
 const state = {
   running: false,
@@ -15,7 +17,8 @@ const state = {
   history: [],
 };
 
-const inputs = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
+const rangeInputs = Object.fromEntries(rangeIds.map((id) => [id, document.getElementById(id)]));
+const directionInputs = Object.fromEntries(directionIds.map((id) => [id, document.getElementById(id)]));
 const derivedEl = document.getElementById('derived');
 
 const machineCanvas = document.getElementById('machineCanvas');
@@ -27,13 +30,14 @@ const posChart = document.getElementById('posChart').getContext('2d');
 const fmt = (v, unit = '') => `${Number(v).toFixed(2)}${unit}`;
 
 function updateValueLabels() {
-  for (const [id, el] of Object.entries(inputs)) {
+  for (const [id, el] of Object.entries(rangeInputs)) {
     document.getElementById(`${id}Val`).textContent = el.value;
   }
 }
 
 function getParams() {
-  const p = Object.fromEntries(Object.entries(inputs).map(([k, el]) => [k, Number(el.value)]));
+  const p = Object.fromEntries(Object.entries(rangeInputs).map(([k, el]) => [k, Number(el.value)]));
+  for (const [k, el] of Object.entries(directionInputs)) p[k] = el.value;
   p.unwOmega = (p.unwinderDeg * Math.PI) / 180;
   p.rUnw = p.dUnw / 2;
   p.rFeed = p.dFeed / 2;
@@ -135,55 +139,246 @@ function pointOnCircle(c, a, scale = 0.95) {
   return { x: c.x + c.r * scale * Math.cos(a), y: c.y + c.r * scale * Math.sin(a) };
 }
 
-function buildWebPath(ctx, S) {
-  // Orthogonal, externally-tangent web route (matching requested schematic style).
-  const unwL = pointOnCircle(S.unw, Math.PI);
-  const unwT = pointOnCircle(S.unw, -Math.PI / 2);
+function computeExternalTangent(c1, c2, side = 1) {
+  const dx = c2.x - c1.x;
+  const dy = c2.y - c1.y;
+  const d = Math.hypot(dx, dy) || 1e-6;
+  const ux = dx / d;
+  const uy = dy / d;
+  const nx = side * (-uy);
+  const ny = side * ux;
 
-  const r1L = pointOnCircle(S.r1, Math.PI);
-  const r1T = pointOnCircle(S.r1, -Math.PI / 2);
+  return {
+    p1: { x: c1.x + nx * c1.r * 0.95, y: c1.y + ny * c1.r * 0.95 },
+    p2: { x: c2.x + nx * c2.r * 0.95, y: c2.y + ny * c2.r * 0.95 },
+  };
+}
 
-  const r2T = pointOnCircle(S.r2, -Math.PI / 2);
-  const r2R = pointOnCircle(S.r2, 0);
+function angleOn(c, p) {
+  return Math.atan2(p.y - c.y, p.x - c.x);
+}
 
-  const bufL = pointOnCircle(S.buf, Math.PI);
-  const bufR = pointOnCircle(S.buf, 0);
+function segmentPointDistance(a, b, p) {
+  const vx = b.x - a.x;
+  const vy = b.y - a.y;
+  const wx = p.x - a.x;
+  const wy = p.y - a.y;
+  const c1 = vx * wx + vy * wy;
+  if (c1 <= 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  const c2 = vx * vx + vy * vy;
+  if (c2 <= c1) return Math.hypot(p.x - b.x, p.y - b.y);
+  const t = c1 / c2;
+  const qx = a.x + t * vx;
+  const qy = a.y + t * vy;
+  return Math.hypot(p.x - qx, p.y - qy);
+}
 
-  const r3L = pointOnCircle(S.r3, Math.PI);
-  const r3T = pointOnCircle(S.r3, -Math.PI / 2);
+function chooseTangentSides(rollers) {
+  const pairCount = rollers.length - 1;
+  let best = null;
 
-  const feedT = pointOnCircle(S.feed, -Math.PI / 2);
-  const feedR = pointOnCircle(S.feed, 0);
+  for (let mask = 0; mask < (1 << pairCount); mask++) {
+    const sides = Array.from({ length: pairCount }, (_, i) => ((mask >> i) & 1 ? 1 : -1));
+    const tangents = sides.map((side, i) => computeExternalTangent(rollers[i], rollers[i + 1], side));
+
+    const inPts = Array(rollers.length).fill(null);
+    const outPts = Array(rollers.length).fill(null);
+    for (let i = 0; i < tangents.length; i++) {
+      outPts[i] = tangents[i].p1;
+      inPts[i + 1] = tangents[i].p2;
+    }
+
+    let score = 0;
+
+    // User-required contact quadrants.
+    const r2 = rollers[2], b = rollers[3], f = rollers[5];
+    if (!(outPts[2].x > r2.x && outPts[2].y > r2.y)) score += 5000; // R2 exit lower-right
+
+    // Active Buffer direction constraint: entry from left, exit to right (upper-right).
+    if (!(inPts[3].x < b.x)) score += 7000;
+    if (!(outPts[3].x > b.x && outPts[3].y < b.y)) score += 7000;
+
+    if (!(inPts[5].x < f.x && inPts[5].y > f.y)) score += 5000;     // Feeder entry lower-left
+
+    // Penalize any straight tangent segment that cuts too close to non-adjacent rollers.
+    for (let i = 0; i < rollers.length - 1; i++) {
+      const a = outPts[i];
+      const c = inPts[i + 1];
+      for (let j = 0; j < rollers.length; j++) {
+        if (j === i || j === i + 1) continue;
+        const d = segmentPointDistance(a, c, rollers[j]);
+        const limit = rollers[j].r * 0.93;
+        if (d < limit) score += (limit - d) * 400;
+      }
+    }
+
+    if (!best || score < best.score) best = { sides, score };
+  }
+
+  return best ? best.sides : [-1, -1, 1, -1, -1];
+}
+
+function tangentPointsFromPoint(point, circle) {
+  const dx = point.x - circle.x;
+  const dy = point.y - circle.y;
+  const r = circle.r * 0.95;
+  const d2 = dx * dx + dy * dy;
+  const d = Math.sqrt(Math.max(d2, 1e-9));
+  if (d <= r) return [];
+
+  const alpha = Math.atan2(dy, dx);
+  const beta = Math.acos(r / d);
+  const a1 = alpha + beta;
+  const a2 = alpha - beta;
+  return [
+    { x: circle.x + r * Math.cos(a1), y: circle.y + r * Math.sin(a1), a: a1 },
+    { x: circle.x + r * Math.cos(a2), y: circle.y + r * Math.sin(a2), a: a2 },
+  ];
+}
+
+function cwDelta(a0, a1) {
+  return ((a1 - a0) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+}
+
+function ccwDelta(a0, a1) {
+  return ((a0 - a1) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+}
+
+const directionAngles = {
+  left: Math.PI,
+  top: -Math.PI / 2,
+  right: 0,
+  bottom: Math.PI / 2,
+  leftTop: -3 * Math.PI / 4,
+  rightTop: -Math.PI / 4,
+  rightBottom: Math.PI / 4,
+  leftBottom: 3 * Math.PI / 4,
+};
+
+function circularDiff(a, b) {
+  const d = ((a - b + Math.PI) % (Math.PI * 2)) - Math.PI;
+  return Math.abs(d);
+}
+
+function entryPenalty(point, circle, direction) {
+  if (!direction || direction === 'auto') return 0;
+  const target = directionAngles[direction];
+  if (target === undefined) return 0;
+  const actual = Math.atan2(point.y - circle.y, point.x - circle.x);
+  return circularDiff(actual, target) * 120;
+}
+
+function buildWebRoute(S, p) {
+  const unw = S.unw;
+  const r1 = S.r1;
+  const r2 = S.r2;
+  const buf = S.buf;
+  const r3 = S.r3;
+  const feed = S.feed;
+
+  // 1) Start at unwinder 9 o'clock.
+  const start = pointOnCircle(unw, Math.PI);
+
+  // 2) Entry line from unwinder start to Roller1 nearest tangent point.
+  const r1TangentsFromStart = tangentPointsFromPoint(start, r1);
+  const r1In = r1TangentsFromStart
+    .map((pt) => ({ pt, score: Math.hypot(pt.x - start.x, pt.y - start.y) + entryPenalty(pt, r1, p.entryR1) }))
+    .sort((a, b) => a.score - b.score)[0].pt;
+
+  // 3) Roller1 clockwise arc -> tangent to Roller2.
+  const t12m = computeExternalTangent(r1, r2, -1);
+  const t12p = computeExternalTangent(r1, r2, 1);
+  const aR1In = angleOn(r1, r1In);
+  const candR1 = [
+    { side: -1, r1Out: t12m.p1, r2In: t12m.p2 },
+    { side: 1, r1Out: t12p.p1, r2In: t12p.p2 },
+  ].map((c) => ({
+    ...c,
+    arcScore: cwDelta(aR1In, angleOn(r1, c.r1Out)) + entryPenalty(c.r2In, r2, p.entryR2),
+  }))
+   .sort((a, b) => a.arcScore - b.arcScore)[0];
+
+  // 4) Roller2 clockwise arc -> ActiveBuffer left-side nearest tangent.
+  const t2Bm = computeExternalTangent(r2, buf, -1);
+  const t2Bp = computeExternalTangent(r2, buf, 1);
+  const aR2In = angleOn(r2, candR1.r2In);
+  const candR2 = [
+    { r2Out: t2Bm.p1, bIn: t2Bm.p2 },
+    { r2Out: t2Bp.p1, bIn: t2Bp.p2 },
+  ].map((c) => {
+    const leftPenalty = c.bIn.x < buf.x ? 0 : 10000;
+    const arcScore = cwDelta(aR2In, angleOn(r2, c.r2Out));
+    return { ...c, score: leftPenalty + arcScore + entryPenalty(c.bIn, buf, p.entryBuf) };
+  }).sort((a, b) => a.score - b.score)[0];
+
+  // 5) ActiveBuffer counter-clockwise arc -> right-side tangent to Roller3 left side.
+  const tB3m = computeExternalTangent(buf, r3, -1);
+  const tB3p = computeExternalTangent(buf, r3, 1);
+  const aBIn = angleOn(buf, candR2.bIn);
+  const candB = [
+    { bOut: tB3m.p1, r3In: tB3m.p2 },
+    { bOut: tB3p.p1, r3In: tB3p.p2 },
+  ].map((c) => {
+    const rightPenalty = c.bOut.x > buf.x ? 0 : 10000;
+    const leftR3Penalty = c.r3In.x < r3.x ? 0 : 10000;
+    const arcScore = ccwDelta(aBIn, angleOn(buf, c.bOut));
+    return { ...c, score: rightPenalty + leftR3Penalty + arcScore + entryPenalty(c.r3In, r3, p.entryR3) };
+  }).sort((a, b) => a.score - b.score)[0];
+
+  // 6) Roller3 clockwise arc -> Feeder left-bottom shortest tangent line.
+  const t3Fm = computeExternalTangent(r3, feed, -1);
+  const t3Fp = computeExternalTangent(r3, feed, 1);
+  const aR3In = angleOn(r3, candB.r3In);
+  const candR3 = [
+    { r3Out: t3Fm.p1, fIn: t3Fm.p2 },
+    { r3Out: t3Fp.p1, fIn: t3Fp.p2 },
+  ].map((c) => {
+    const feederQuadPenalty = c.fIn.x < feed.x && c.fIn.y > feed.y ? 0 : 10000;
+    const arcScore = cwDelta(aR3In, angleOn(r3, c.r3Out));
+    const lineScore = Math.hypot(c.fIn.x - c.r3Out.x, c.fIn.y - c.r3Out.y);
+    return { ...c, score: feederQuadPenalty + arcScore + lineScore * 0.01 + entryPenalty(c.fIn, feed, p.entryFeed) };
+  }).sort((a, b) => a.score - b.score)[0];
+
+  return {
+    start,
+    r1In,
+    r1Out: candR1.r1Out,
+    r2In: candR1.r2In,
+    r2Out: candR2.r2Out,
+    bIn: candR2.bIn,
+    bOut: candB.bOut,
+    r3In: candB.r3In,
+    r3Out: candR3.r3Out,
+    fIn: candR3.fIn,
+    rollers: { unw, r1, r2, buf, r3, feed },
+  };
+}
+
+function buildWebPath(ctx, S, p) {
+  const R = buildWebRoute(S, p);
+  const { unw, r1, r2, buf, r3 } = R.rollers;
 
   ctx.beginPath();
+  ctx.moveTo(R.start.x, R.start.y);
+  ctx.lineTo(R.r1In.x, R.r1In.y);
 
-  // Unwinder left side up + wrap to top.
-  ctx.moveTo(unwL.x, unwL.y + S.unw.r * 0.95);
-  ctx.lineTo(unwL.x, unwL.y);
-  ctx.arc(S.unw.x, S.unw.y, S.unw.r * 0.95, Math.PI, -Math.PI / 2, true);
+  // Roller1 clockwise
+  ctx.arc(r1.x, r1.y, r1.r * 0.95, angleOn(r1, R.r1In), angleOn(r1, R.r1Out), false);
+  ctx.lineTo(R.r2In.x, R.r2In.y);
 
-  // Link to Roller1 left and wrap to top.
-  ctx.lineTo(r1L.x, r1L.y);
-  ctx.arc(S.r1.x, S.r1.y, S.r1.r * 0.95, Math.PI, -Math.PI / 2, true);
+  // Roller2 clockwise
+  ctx.arc(r2.x, r2.y, r2.r * 0.95, angleOn(r2, R.r2In), angleOn(r2, R.r2Out), false);
+  ctx.lineTo(R.bIn.x, R.bIn.y);
 
-  // Top straight to Roller2 top, then down right side to buffer left side.
-  ctx.lineTo(r2T.x, r2T.y);
-  ctx.arc(S.r2.x, S.r2.y, S.r2.r * 0.95, -Math.PI / 2, 0, false);
-  ctx.lineTo(r2R.x, bufL.y);
+  // ActiveBuffer counter-clockwise
+  ctx.arc(buf.x, buf.y, buf.r * 0.95, angleOn(buf, R.bIn), angleOn(buf, R.bOut), true);
+  ctx.lineTo(R.r3In.x, R.r3In.y);
 
-  // Active buffer wrap (left to right across lower side).
-  ctx.lineTo(bufL.x, bufL.y);
-  ctx.arc(S.buf.x, S.buf.y, S.buf.r * 0.95, Math.PI, 0, true);
+  // Roller3 clockwise then straight to Feeder left-bottom entry
+  ctx.arc(r3.x, r3.y, r3.r * 0.95, angleOn(r3, R.r3In), angleOn(r3, R.r3Out), false);
+  ctx.lineTo(R.fIn.x, R.fIn.y);
 
-  // Up to Roller3 left, wrap to top.
-  ctx.lineTo(bufR.x, r3L.y);
-  ctx.lineTo(r3L.x, r3L.y);
-  ctx.arc(S.r3.x, S.r3.y, S.r3.r * 0.95, Math.PI, -Math.PI / 2, true);
-
-  // Top straight to feeder top, then to right side and small tail.
-  ctx.lineTo(feedT.x, feedT.y);
-  ctx.arc(S.feed.x, S.feed.y, S.feed.r * 0.95, -Math.PI / 2, 0, false);
-  ctx.lineTo(feedR.x + S.feed.r * 0.72, feedR.y);
+  return R;
 }
 
 
@@ -202,21 +397,21 @@ function drawMachine(p, kin, bufferY, cutterLift) {
     buf: { x: 620, y: 300 + bufferY, r: p.dBuf * 0.35 },
   };
 
-  buildWebPath(ctx, S);
+  buildWebPath(ctx, S, p);
   ctx.lineWidth = 12;
   ctx.strokeStyle = 'rgba(255,45,130,0.12)';
   ctx.shadowColor = 'rgba(255,70,160,0.95)';
   ctx.shadowBlur = 25;
   ctx.stroke();
 
-  buildWebPath(ctx, S);
+  buildWebPath(ctx, S, p);
   ctx.lineWidth = 4.5;
   ctx.strokeStyle = '#ff4d7f';
   ctx.shadowBlur = 16;
   ctx.stroke();
 
   if (state.running) {
-    buildWebPath(ctx, S);
+    buildWebPath(ctx, S, p);
     ctx.lineWidth = 2.4;
     ctx.strokeStyle = '#ffd6e4';
     ctx.setLineDash([11, 20]);
@@ -453,9 +648,8 @@ function tick(ts) {
   requestAnimationFrame(tick);
 }
 
-for (const el of Object.values(inputs)) {
-  el.addEventListener('input', updateValueLabels);
-}
+for (const el of Object.values(rangeInputs)) el.addEventListener('input', updateValueLabels);
+for (const el of Object.values(directionInputs)) el.addEventListener('change', updateValueLabels);
 
 document.getElementById('startBtn').addEventListener('click', () => {
   state.running = !state.running;
